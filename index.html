@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Panel de Monitoreo (Lab)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    h2 { margin-bottom: 12px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: stretch; }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 14px;
+      padding: 12px 14px;
+      min-width: 300px;
+      flex: 1;
+      box-shadow: 0 2px 10px rgba(0,0,0,.05);
+    }
+    button {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #bbb;
+      cursor: pointer;
+      background: #fff;
+    }
+    button:hover { background: #f4f4f4; }
+    pre {
+      background: #f6f6f6;
+      padding: 12px;
+      border-radius: 12px;
+      overflow: auto;
+      border: 1px solid #e6e6e6;
+    }
+    .label { font-weight: 600; }
+    .value { font-variant-numeric: tabular-nums; }
+    .ok { color: #0a7; font-weight: 700; }
+    .bad { color: #c00; font-weight: 700; }
+    .alert { font-weight: 800; margin-top: 8px; }
+    .muted { color: #666; font-size: 0.95rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 14px;
+      margin-top: 8px;
+    }
+    .metric { display:flex; justify-content:space-between; }
+    .footer { margin-top: 18px; }
+  </style>
+</head>
+
+<body>
+  <h2>Panel de Monitoreo — UI Web</h2>
+  <div class="muted">Actualiza métricas cada 3s. Requiere API con HTTPS + API Key.</div>
+
+  <div class="row" style="margin-top: 14px;">
+    <div class="card">
+      <h3>Estado</h3>
+      <div class="metric">
+        <span class="label">API</span>
+        <span id="apiStatus" class="bad">Desconectado</span>
+      </div>
+      <div class="metric">
+        <span class="label">Última actualización</span>
+        <span id="lastUpdate" class="value">-</span>
+      </div>
+      <div style="margin-top: 10px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button onclick="checkHealth()">Probar conexión</button>
+        <button onclick="refreshAll()">Actualizar todo</button>
+      </div>
+      <div class="footer muted">
+        Tip: si falla por certificado, abre primero <b>https://127.0.0.1:5443/health</b> y acepta el riesgo.
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Métricas</h3>
+      <div class="grid">
+        <div class="metric"><span class="label">CPU</span><span><span id="cpu" class="value">-</span>%</span></div>
+        <div class="metric"><span class="label">RAM</span><span><span id="ram" class="value">-</span>%</span></div>
+        <div class="metric"><span class="label">Disco</span><span><span id="disk" class="value">-</span>%</span></div>
+        <div class="metric"><span class="label">Historial CPU</span><span id="cpuHist" class="value">-</span></div>
+      </div>
+      <div id="alerts" class="alert"></div>
+      <div style="margin-top: 10px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button onclick="refreshMetrics()">Actualizar métricas</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Procesos</h3>
+      <div class="muted">Top procesos por CPU (devuelto por la API).</div>
+      <div style="margin-top: 10px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button onclick="loadProcesses()">Ver Top procesos</button>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin-top: 18px;">Salida</h3>
+  <pre id="out">Listo.</pre>
+
+  <h3>Eventos recientes (logs)</h3>
+  <pre id="logArea">(Aún sin datos)</pre>
+
+<script>
+  // =========================
+  // CONFIGURACIÓN
+  // =========================
+  const API_BASE = "https://127.0.0.1:5443";
+  const API_KEY  = "MI_TOKEN_SECRETO_123";
+
+  // =========================
+  // ELEMENTOS UI
+  // =========================
+  const out = document.getElementById("out");
+  const apiStatus = document.getElementById("apiStatus");
+  const alerts = document.getElementById("alerts");
+  const lastUpdate = document.getElementById("lastUpdate");
+  const logArea = document.getElementById("logArea");
+
+  let cpuHistory = [];
+
+  function nowStr() {
+    const d = new Date();
+    return d.toLocaleString();
+  }
+
+  function setOut(data) {
+    out.textContent = (typeof data === "string") ? data : JSON.stringify(data, null, 2);
+  }
+
+  function setAlerts(msg) {
+    alerts.textContent = msg || "";
+  }
+
+  function setApiConnected(isOk) {
+    apiStatus.textContent = isOk ? "Conectado" : "Desconectado";
+    apiStatus.className = isOk ? "ok" : "bad";
+  }
+
+  // =========================
+  // LLAMADAS A API
+  // =========================
+  async function checkHealth() {
+    try {
+      const res = await fetch(`${API_BASE}/health`);
+      const data = await res.json();
+
+      if (res.ok && data.status === "ok") {
+        setApiConnected(true);
+        lastUpdate.textContent = nowStr();
+        setOut(data);
+      } else {
+        setApiConnected(false);
+        setOut(data);
+      }
+    } catch (e) {
+      setApiConnected(false);
+      setOut("Error en /health: " + String(e));
+    }
+  }
+
+  async function refreshMetrics() {
+    try {
+      const res = await fetch(`${API_BASE}/metrics`, {
+        headers: { "X-API-KEY": API_KEY }
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setApiConnected(false);
+        setAlerts("⚠️ No autorizado o error consultando métricas.");
+        setOut(data);
+        return;
+      }
+
+      // UI
+      document.getElementById("cpu").textContent  = data.cpu;
+      document.getElementById("ram").textContent  = data.ram;
+      document.getElementById("disk").textContent = data.disk;
+
+      // Historial CPU (últimos 10)
+      cpuHistory.push(data.cpu);
+      if (cpuHistory.length > 10) cpuHistory.shift();
+      document.getElementById("cpuHist").textContent = cpuHistory.join(", ");
+
+      // Alertas simples
+      let a = [];
+      if (data.cpu > 80) a.push("⚠️ CPU alta");
+      if (data.ram > 80) a.push("⚠️ RAM alta");
+      if (data.disk > 90) a.push("⚠️ Disco casi lleno");
+      setAlerts(a.join(" | "));
+
+      setApiConnected(true);
+      lastUpdate.textContent = nowStr();
+      setOut({ ok: true, metrics: data, cpu_last_10: cpuHistory });
+
+    } catch (e) {
+      setApiConnected(false);
+      setOut("Error en /metrics: " + String(e));
+      setAlerts("⚠️ No se pudo conectar (certificado/CORS/puerto).");
+    }
+  }
+
+  async function loadProcesses() {
+    try {
+      const res = await fetch(`${API_BASE}/processes`, {
+        headers: { "X-API-KEY": API_KEY }
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setApiConnected(false);
+        setOut(data);
+        return;
+      }
+
+      setApiConnected(true);
+      lastUpdate.textContent = nowStr();
+      setOut(data);
+
+    } catch (e) {
+      setApiConnected(false);
+      setOut("Error en /processes: " + String(e));
+    }
+  }
+
+  async function loadLogs() {
+    try {
+      const res = await fetch(`${API_BASE}/logs`, {
+        headers: { "X-API-KEY": API_KEY }
+      });
+      const data = await res.json();
+
+      if (!res.ok) return;
+
+      const lines = data.logs || [];
+      logArea.textContent = lines.length ? lines.join("") : "(Sin logs aún)";
+    } catch (e) {
+      // No molestamos con alertas aquí, solo silencio.
+    }
+  }
+
+  async function refreshAll() {
+    await checkHealth();
+    await refreshMetrics();
+    await loadLogs();
+  }
+
+  // =========================
+  // “TIEMPO REAL”
+  // =========================
+  // Métricas cada 3s y logs cada 5s
+  setInterval(refreshMetrics, 3000);
+  setInterval(loadLogs, 5000);
+
+  // Primer arranque
+  refreshAll();
+</script>
+
+</body>
+</html>
